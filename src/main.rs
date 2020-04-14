@@ -16,33 +16,86 @@
 // and that you want to learn Vulkan. This means that for example it won't go into details about
 // what a vertex or a shader is.
 
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
 use vulkano::buffer::cpu_pool::CpuBufferPool;
+use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
-use vulkano::device::{Device, DeviceExtensions};
-use vulkano::framebuffer::{Framebuffer, FramebufferAbstract, RenderPassAbstract, Subpass};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
+use vulkano::descriptor::pipeline_layout::PipelineLayoutAbstract;
+use vulkano::device::{Device, DeviceExtensions};
+use vulkano::format::Format;
+use vulkano::framebuffer::{Framebuffer, FramebufferAbstract, RenderPassAbstract, Subpass};
 use vulkano::image::SwapchainImage;
 use vulkano::instance::{Instance, PhysicalDevice};
 use vulkano::pipeline::viewport::Viewport;
-use vulkano::pipeline::{GraphicsPipeline};
+use vulkano::pipeline::GraphicsPipeline;
 use vulkano::swapchain;
 use vulkano::swapchain::{
     AcquireError, ColorSpace, FullscreenExclusive, PresentMode, SurfaceTransform, Swapchain,
     SwapchainCreationError,
 };
-use vulkano::descriptor::pipeline_layout::PipelineLayoutAbstract;
 use vulkano::sync;
 use vulkano::sync::{FlushError, GpuFuture};
 
+use vulkano::image::attachment::AttachmentImage;
+
 use vulkano_win::VkSurfaceBuild;
+
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
+use cgmath::*;
+use cgmath::{Matrix3, Matrix4, Point3, Rad, Vector3};
+use tobj;
+
+use std::path::Path;
 use std::sync::Arc;
-use cgmath::{Matrix3, Matrix4, Point3, Vector3, Rad};
 use std::time::Instant;
+
+#[derive(Default, Debug, Clone)]
+struct Vertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+    color: [f32; 4],
+}
+
+fn load_model() -> Vec<Vertex> {
+    let cornell_box = tobj::load_obj(&Path::new("teapot.obj"));
+    assert!(cornell_box.is_ok());
+
+    let (models, _) = cornell_box.unwrap();
+    let mut vertices: Vec<Vertex> = Vec::with_capacity(0);
+    for m in models {
+        let positions: Vec<&[f32]> = m.mesh.positions.chunks(3).collect();
+        let indices = m.mesh.indices.as_slice();
+
+        for i in indices.chunks(3) {
+            vertices.extend(i.iter().map(|x| Vertex {
+                position: [
+                    positions[*x as usize][0],
+                    positions[*x as usize][1],
+                    positions[*x as usize][2],
+                ],
+                normal: [0., 0., 0.], //normals[j],
+                color: [1., 0., 0., 1.],
+            }));
+        }
+    }
+
+    for i in 0..(vertices.len() / 3) {
+        let (v1, v2, v3) = (
+            Vector3::from(vertices[i * 3].position),
+            Vector3::from(vertices[i * 3 + 1].position),
+            Vector3::from(vertices[i * 3 + 2].position),
+        );
+        vertices[i * 3].normal = (v1 - v2).cross(v3 - v1).normalize().into();
+        vertices[i * 3 + 1].normal = (v2 - v3).cross(v1 - v2).normalize().into();
+        vertices[i * 3 + 2].normal = (v3 - v1).cross(v2 - v3).normalize().into();
+        //println!("{:?} {:?} {:?} -> {:?} {:?} {:?}",v1,v2,v3,vertices[i].normal,vertices[i+1].normal,vertices[i+2].normal);
+    }
+
+    return vertices;
+}
 
 fn main() {
     // The first step of any Vulkan program is to create an instance.
@@ -95,7 +148,6 @@ fn main() {
         .build_vk_surface(&event_loop, instance.clone())
         .unwrap();
     let dimensions: [u32; 2] = surface.window().inner_size().into();
-    
 
     // The next step is to choose which GPU queue will execute our draw commands.
     //
@@ -199,47 +251,17 @@ fn main() {
         .unwrap()
     };
 
+    let vertex_data = load_model();
+
     // We now create a buffer that will store the shape of our triangle.
     let vertex_buffer = {
-        #[derive(Default, Debug, Clone)]
-        struct Vertex {
-            position: [f32; 3],
-            color: [f32; 4],
-        }
-        vulkano::impl_vertex!(Vertex, position, color);
+        vulkano::impl_vertex!(Vertex, position, normal, color);
 
         CpuAccessibleBuffer::from_iter(
             device.clone(),
             BufferUsage::all(),
             false,
-            [
-                Vertex {
-                    position: [-0.5, -0.5, 0.5],
-                    color: [1., 0., 0., 1.],
-                },
-                Vertex {
-                    position: [-0.5, 0.5, 0.5],
-                    color: [0., 1., 0., 1.],
-                },
-                Vertex {
-                    position: [0.5, -0.5, 0.5],
-                    color: [0., 0., 1., 1.],
-                },
-                Vertex {
-                    position: [-0.5, 0.5, 0.5],
-                    color: [0., 1., 0., 1.],
-                },
-                Vertex {
-                    position: [0.5, 0.5, 0.5],
-                    color: [0., 1., 1., 1.],
-                },
-                Vertex {
-                    position: [0.5, -0.5, 0.5],
-                    color: [0., 0., 1., 1.],
-                },
-            ]
-            .iter()
-            .cloned(),
+            vertex_data.iter().cloned(),
         )
         .unwrap()
     };
@@ -266,13 +288,20 @@ fn main() {
                 } ubo;
                 
                 layout(location = 0) in vec3 position;
-                layout(location = 1) in vec4 color;
+                layout(location = 1) in vec3 normal;
+                layout(location = 2) in vec4 color;
                 
                 layout(location = 0) out vec4 fragColor;
+                layout(location = 1) out vec3 surfaceNormal;
+                layout(location = 2) out vec3 toLightVector;
                 
                 void main() {
-                    gl_Position = ubo.proj * ubo.view * ubo.model * vec4(position, 1.0);
+                    vec4 worldPosition = ubo.model * vec4(position, 1.0);
+                    gl_Position = ubo.proj * ubo.view * worldPosition;
                     fragColor = color;
+
+                    surfaceNormal = ( ubo.model * vec4(normal,0.0)).xyz;
+                    toLightVector = inverse(ubo.view)[3].xyz - worldPosition.xyz; //
                 }
 			"
         }
@@ -285,11 +314,18 @@ fn main() {
                 #version 450
 
                 layout(location = 0) in vec4 color;
+                layout(location = 1) in vec3 surfaceNormal;
+                layout(location = 2) in vec3 toLightVector;
 
 				layout(location = 0) out vec4 f_color;
 
 				void main() {
-					f_color = color;
+                    vec3 unitNormal = normalize(surfaceNormal);
+                    vec3 unitLight = normalize(toLightVector);
+
+                    float nDotl = max(dot(unitNormal,unitLight),0.5);
+
+					f_color = vec4(color.xyz*nDotl,color.w);
 				}
 			"
         }
@@ -298,9 +334,8 @@ fn main() {
     let vs = vs::Shader::load(device.clone()).unwrap();
     let fs = fs::Shader::load(device.clone()).unwrap();
 
-
-    let uniform_buffer = CpuBufferPool::<vs::ty::UniformBufferObject>::new(device.clone(), BufferUsage::all());
-
+    let uniform_buffer =
+        CpuBufferPool::<vs::ty::UniformBufferObject>::new(device.clone(), BufferUsage::all());
 
     // At this point, OpenGL initialization would be finished. However in Vulkan it is not. OpenGL
     // implicitly does a lot of computation whenever you draw. In Vulkan, you have to do all this
@@ -313,28 +348,22 @@ fn main() {
         vulkano::single_pass_renderpass!(
             device.clone(),
             attachments: {
-                // `color` is a custom name we give to the first and only attachment.
                 color: {
-                    // `load: Clear` means that we ask the GPU to clear the content of this
-                    // attachment at the start of the drawing.
                     load: Clear,
-                    // `store: Store` means that we ask the GPU to store the output of the draw
-                    // in the actual image. We could also ask it to discard the result.
                     store: Store,
-                    // `format: <ty>` indicates the type of the format of the image. This has to
-                    // be one of the types of the `vulkano::format` module (or alternatively one
-                    // of your structs that implements the `FormatDesc` trait). Here we use the
-                    // same format as the swapchain.
                     format: swapchain.format(),
-                    // TODO:
+                    samples: 1,
+                },
+                depth: {
+                    load: Clear,
+                    store: DontCare,
+                    format: Format::D16Unorm,
                     samples: 1,
                 }
             },
             pass: {
-                // We use the attachment named `color` as the one and only color attachment.
                 color: [color],
-                // No depth-stencil attachment is indicated with empty brackets.
-                depth_stencil: {}
+                depth_stencil: {depth}
             }
         )
         .unwrap(),
@@ -344,6 +373,9 @@ fn main() {
     // program, but much more specific.
     let pipeline = Arc::new(
         GraphicsPipeline::start()
+            .cull_mode_back()
+            .depth_stencil_simple_depth()
+            //.polygon_mode_line()
             // We need to indicate the layout of the vertices.
             // The type `SingleBufferDefinition` actually contains a template parameter corresponding
             // to the type of each vertex. But in this code it is automatically inferred.
@@ -366,7 +398,6 @@ fn main() {
             .unwrap(),
     );
 
-
     // Dynamic viewports allow us to recreate just the viewport when the window is resized
     // Otherwise we would have to recreate the whole pipeline.
     let mut dynamic_state = DynamicState {
@@ -384,7 +415,7 @@ fn main() {
     // Since we need to draw to multiple images, we are going to create a different framebuffer for
     // each image.
     let mut framebuffers =
-        window_size_dependent_setup(&images, render_pass.clone(), &mut dynamic_state);
+        window_size_dependent_setup(device.clone(),&images, render_pass.clone(), &mut dynamic_state);
 
     // Initialization is finally finished!
 
@@ -447,6 +478,7 @@ fn main() {
                     // Because framebuffers contains an Arc on the old swapchain, we need to
                     // recreate framebuffers as well.
                     framebuffers = window_size_dependent_setup(
+                        device.clone(),
                         &new_images,
                         render_pass.clone(),
                         &mut dynamic_state,
@@ -456,15 +488,25 @@ fn main() {
 
                 let uniform_buffer_subbuffer = {
                     let elapsed = rotation_start.elapsed();
-                    let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
-                    let rotation = Matrix3::from_angle_y(Rad(rotation as f32));
+                    let rotation =
+                        elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
+                    let rotation = Matrix3::from_angle_y(Rad((rotation) as f32));
 
                     // note: this teapot was meant for OpenGL where the origin is at the lower left
                     //       instead the origin is at the upper left in Vulkan, so we reverse the Y axis
                     let aspect_ratio = dimensions[0] as f32 / dimensions[1] as f32;
-                    let proj = cgmath::perspective(Rad(std::f32::consts::FRAC_PI_2), aspect_ratio, 0.01, 100.0);
-                    let view = Matrix4::look_at(Point3::new(0.0, 0.0, 2.0), Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-                    let scale = Matrix4::from_scale(1.0);
+                    let proj = cgmath::perspective(
+                        Rad(std::f32::consts::FRAC_PI_2),
+                        aspect_ratio,
+                        0.01,
+                        1000.0,
+                    );
+                    let view = Matrix4::look_at(
+                        Point3::new(0., 25.0, 70.0),
+                        Point3::new(0.0, 0.0, 0.0),
+                        Vector3::new(0.0, -1.0, 0.0),
+                    );
+                    let scale = Matrix4::from_scale(0.8);
 
                     let uniform_data = vs::ty::UniformBufferObject {
                         model: Matrix4::from(rotation).into(),
@@ -476,9 +518,12 @@ fn main() {
                 };
 
                 let layout = pipeline.descriptor_set_layout(0).unwrap();
-                let set = Arc::new(PersistentDescriptorSet::start(layout.clone())
-                    .add_buffer(uniform_buffer_subbuffer).unwrap()
-                    .build().unwrap()
+                let set = Arc::new(
+                    PersistentDescriptorSet::start(layout.clone())
+                        .add_buffer(uniform_buffer_subbuffer)
+                        .unwrap()
+                        .build()
+                        .unwrap(),
                 );
 
                 // Before we can draw on the output, we have to *acquire* an image from the swapchain. If
@@ -506,7 +551,10 @@ fn main() {
                 }
 
                 // Specify the color to clear the framebuffer with i.e. blue
-                let clear_values = vec![[0.0, 0.0, 1.0, 1.0].into()];
+                let clear_values = vec![
+                    [0.0, 0.0, 1.0, 1.0].into(),
+                    1f32.into()
+                ];
 
                 // In order to draw, we have to build a *command buffer*. The command buffer object holds
                 // the list of commands that are going to be executed.
@@ -588,6 +636,7 @@ fn main() {
 
 /// This method is called once during initialization, then again whenever the window is resized
 fn window_size_dependent_setup(
+    device: Arc<Device>,
     images: &[Arc<SwapchainImage<Window>>],
     render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
     dynamic_state: &mut DynamicState,
@@ -601,12 +650,16 @@ fn window_size_dependent_setup(
     };
     dynamic_state.viewports = Some(vec![viewport]);
 
+    let depth_buffer =
+        AttachmentImage::transient(device.clone(), dimensions, Format::D16Unorm).unwrap();
     images
         .iter()
         .map(|image| {
             Arc::new(
                 Framebuffer::start(render_pass.clone())
                     .add(image.clone())
+                    .unwrap()
+                    .add(depth_buffer.clone())
                     .unwrap()
                     .build()
                     .unwrap(),
