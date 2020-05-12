@@ -5,38 +5,11 @@ use std::io::prelude::*;
 use std::path::Path;
 use tobj::{load_obj, Model as TobjModel};
 
-/// converts a list of vertices into a list of indices to group similar points
-fn vertices_to_indices(vertices: Vec<Point2<f32>>) -> (Vec<usize>, Vec<Point2<f32>>) {
-    let mut points: Vec<Point2<f32>> = Vec::new();
-    let indices = vertices
-        .iter()
-        .map(|p| {
-            let hit = points
-                .iter()
-                .enumerate()
-                .filter(|(_, x)| (**x - p).magnitude() < 0.01) // smaler than 0.1 mm
-                .map(|(i, _)| i)
-                .next();
-            match hit {
-                Some(h) => {
-                    return h;
-                }
-                _ => {
-                    points.push(*p);
-                    return points.len() - 1;
-                }
-            }
-        })
-        .collect::<Vec<usize>>();
-    return (indices, points);
-}
-
 fn connect_lines(lines: &Vec<Polygon>) -> Vec<Polygon> {
-    let vertices: Vec<Point2<f32>> = lines.iter().map(|x| x.points.clone()).flatten().collect();
+    let mut vertices: Vec<Point2<f32>> = Vec::new();
     // convert points into list of indices => group similar points
-    let (points, indices) = vertices_to_indices(vertices);
-
-    let mut polygons: Vec<Vec<usize>> = points.chunks(2).map(|x| vec![x[0], x[1]]).collect();
+    let mut polygons: Vec<IndexPolygon> =
+        lines.iter().map(|p| p.to_indices(&mut vertices)).collect();
 
     // combine lines into closed polygons
     // this is done by iterativly joining lines together until no new lines can be joined
@@ -49,43 +22,81 @@ fn connect_lines(lines: &Vec<Polygon>) -> Vec<Polygon> {
             while j < polygons.len() {
                 let l1 = polygons[i].clone();
                 let l2 = polygons[j].clone();
-                if l1[0] == l2[0] {
+                if l1.points[0] == l2.points[0] {
                     // first points of each lines are the same
                     polygons.remove(j);
-                    polygons[i] = l1
-                        .iter()
-                        .skip(1)
-                        .rev()
-                        .chain(l2.iter())
-                        .map(|x| *x)
-                        .collect::<Vec<usize>>();
+                    polygons[i] = IndexPolygon {
+                        points: l1
+                            .points
+                            .iter()
+                            .skip(1)
+                            .rev()
+                            .chain(l2.points.iter())
+                            .map(|x| *x)
+                            .collect(),
+                        normals: l1
+                            .normals
+                            .iter()
+                            .skip(1)
+                            .rev()
+                            .chain(l2.normals.iter())
+                            .map(|x| *x)
+                            .collect(),
+                    };
                     new = true;
-                } else if l1[l1.len() - 1] == l2[l2.len() - 1] {
+                } else if l1.points[l1.points.len() - 1] == l2.points[l2.points.len() - 1] {
                     // last points of each lines are the same
                     polygons.remove(j);
-                    polygons[i] = l1
-                        .iter()
-                        .chain(l2.iter().rev().skip(1))
-                        .map(|x| *x)
-                        .collect::<Vec<usize>>();
+                    polygons[i] = IndexPolygon {
+                        points: l1
+                            .points
+                            .iter()
+                            .chain(l2.points.iter().rev().skip(1))
+                            .map(|x| *x)
+                            .collect(),
+                        normals: l1
+                            .normals
+                            .iter()
+                            .chain(l2.normals.iter().rev().skip(1))
+                            .map(|x| *x)
+                            .collect(),
+                    };
                     new = true;
-                } else if l1[l1.len() - 1] == l2[0] {
+                } else if l1.points[l1.points.len() - 1] == l2.points[0] {
                     // last point of first line and the first of the second one are the same
                     polygons.remove(j);
-                    polygons[i] = l1
-                        .iter()
-                        .chain(l2.iter().skip(1))
-                        .map(|x| *x)
-                        .collect::<Vec<usize>>();
+                    polygons[i] = IndexPolygon {
+                        points: l1
+                            .points
+                            .iter()
+                            .chain(l2.points.iter().skip(1))
+                            .map(|x| *x)
+                            .collect(),
+                        normals: l1
+                            .normals
+                            .iter()
+                            .chain(l2.normals.iter().skip(1))
+                            .map(|x| *x)
+                            .collect(),
+                    };
                     new = true;
-                } else if l1[0] == l2[l2.len() - 1] {
+                } else if l1.points[0] == l2.points[l2.points.len() - 1] {
                     // first point of first line and the last of the second one are the same
                     polygons.remove(j);
-                    polygons[i] = l2
-                        .iter()
-                        .chain(l1.iter().skip(1))
-                        .map(|x| *x)
-                        .collect::<Vec<usize>>();
+                    polygons[i] = IndexPolygon {
+                        points: l2
+                            .points
+                            .iter()
+                            .chain(l1.points.iter().skip(1))
+                            .map(|x| *x)
+                            .collect(),
+                        normals: l2
+                            .normals
+                            .iter()
+                            .chain(l1.normals.iter().skip(1))
+                            .map(|x| *x)
+                            .collect(),
+                    };
                     new = true;
                 } else {
                     j += 1;
@@ -97,10 +108,7 @@ fn connect_lines(lines: &Vec<Polygon>) -> Vec<Polygon> {
     // convert the indices pack to actual vertices
     let line_vertices: Vec<Polygon> = polygons
         .iter()
-        .map(|l| Polygon {
-            points: l.iter().map(|x| indices[*x]).collect::<Vec<Point2<f32>>>(),
-            normals: Vec::new(),
-        })
+         .map(|l| l.to_polygon(vertices.clone()))
         .collect();
     return line_vertices;
 }
@@ -209,7 +217,7 @@ fn main_join() {
     <!DOCTYPE html>
     <html>
         <body>
-            <svg viewBox='-100 -100 200 200' height='500' width='500'>
+            <svg viewBox='-100 -100 100 100' height='500' width='500'>
                 {}
             </svg>
         </body>
@@ -224,7 +232,7 @@ fn main_join() {
 }
 
 fn main() {
-    let model = load_model("teapot.obj");
+    let model = load_model("cube.obj");
     let mut layers: Vec<String> = Vec::new();
     for z in 0..100 {
         let outline = model.slice(z as f32 - 40.);
@@ -236,12 +244,18 @@ fn main() {
             polygons
                 .iter()
                 .map(|x| to_polygon(&x.points))
-                .chain(
-                    outline.iter().map(|poly|
-                        poly.points.iter()
-                        .zip(poly.normals.iter()).map(|(p1,v)|to_line(*p1, *v*5.)).collect::<Vec<String>>()
-                    ).flatten()
-                )
+                // .chain(
+                //     polygons
+                //         .iter()
+                //         .map(|poly| poly
+                //             .points
+                //             .iter()
+                //             .zip(poly.points.iter().skip(1))
+                //             .zip(poly.normals.iter())
+                //             .map(|((p1,p2), v)| to_line(p1.add_element_wise(*p2)*0.5, *v * 5.))
+                //             .collect::<Vec<String>>())
+                //         .flatten()
+                // )
                 .collect::<Vec<String>>()
                 .join("\n")
         ));
@@ -253,7 +267,7 @@ fn main() {
     <!DOCTYPE html>
     <html>
         <body>
-            <svg viewBox='-100 -100 200 200' height='500' width='500'>
+            <svg viewBox='-50 -50 100 100' height='500' width='500'>
                 {}
             </g>
             </svg>
@@ -297,10 +311,59 @@ fn to_line(p: Point2<f32>, v: Vector2<f32>) -> String {
     );
 }
 
-#[derive(Debug)]
-struct Polygon {
-    points: Vec<Point2<f32>>,
+#[derive(Debug, Clone)]
+struct AbstractPolygon<T> {
+    /// list of n points
+    points: Vec<T>,
+    /// list of n normals, one for each line
     normals: Vec<Vector2<f32>>,
+}
+
+type Polygon = AbstractPolygon<Point2<f32>>;
+
+impl Polygon {
+    pub fn to_indices(&self, vertices: &mut Vec<Point2<f32>>) -> IndexPolygon {
+        let indices = self
+            .points
+            .iter()
+            .map(|p| {
+                let hit = vertices
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, x)| (**x - p).magnitude() < 0.01) // smaler than 0.1 mm
+                    .map(|(i, _)| i)
+                    .next();
+                match hit {
+                    Some(h) => {
+                        return h;
+                    }
+                    _ => {
+                        vertices.push(*p);
+                        return vertices.len() - 1;
+                    }
+                }
+            })
+            .collect::<Vec<usize>>();
+        return IndexPolygon {
+            points: indices,
+            normals: self.normals.clone(),
+        };
+    }
+}
+
+type IndexPolygon = AbstractPolygon<usize>;
+
+impl IndexPolygon {
+    pub fn to_polygon(&self, vertices: Vec<Point2<f32>>) -> Polygon {
+        return Polygon {
+            points: self
+                .points
+                .iter()
+                .map(|x| vertices[*x])
+                .collect::<Vec<Point2<f32>>>(),
+            normals: self.normals.clone(),
+        };
+    }
 }
 
 type Slice = Vec<Polygon>;
@@ -319,49 +382,58 @@ impl Model {
             .faces
             .iter()
             .zip(&self.normals)
-            .map(|([i1, i2, i3], normal)| {
+            .filter_map(|([i1, i2, i3], normal)| {
                 let v1 = self.vertices[*i1 as usize];
                 let v2 = self.vertices[*i2 as usize];
                 let v3 = self.vertices[*i3 as usize];
 
                 // the 3 lines of a triangle representated as start point and vector pointing to the end
-                let polygons: Vec<Polygon> = [(v1, v2 - v1), (v2, v3 - v2), (v3, v1 - v3)]
-                    .iter()
-                    .filter_map(|(p, d)| {
-                        if d.y == 0. {
-                            // line lies on a plane parallel to the xz plane
-                            if p.y == y {
-                                // line lies exactly on plane
-                                return Some(Polygon {
-                                    points: vec![
-                                        Point2::new(p.x, p.z),
-                                        Point2::new(p.x + d.x, p.z + d.z),
-                                    ],
-                                    normals: vec![Vector2::new(normal.x, normal.z).normalize().into()],
-                                });
+                let (points, normals): (Vec<Vec<Point2<f32>>>, Vec<Vec<Vector2<f32>>>) =
+                    [(v1, v2 - v1), (v2, v3 - v2), (v3, v1 - v3)]
+                        .iter()
+                        .filter_map(|(p, d)| {
+                            if d.y == 0. {
+                                // line lies on a plane parallel to the xz plane
+                                if p.y == y {
+                                    // line lies exactly on plane
+                                    return Some((
+                                        vec![
+                                            Point2::new(p.x, p.z),
+                                            Point2::new(p.x + d.x, p.z + d.z),
+                                        ],
+                                        vec![Vector2::new(normal.x, normal.z).normalize().into()],
+                                    ));
+                                } else {
+                                    // line does not intersect plane
+                                    return None;
+                                }
                             } else {
-                                // line does not intersect plane
-                                return None;
+                                let t: f32 = (y - p.y) / (d.y);
+                                if t >= 0. && t <= 1. {
+                                    // the intersection is within the start and end of the line
+                                    let intsec = (*p) + d * t;
+                                    return Some((
+                                        vec![Point2::new(intsec.x, intsec.z)],
+                                        vec![Vector2::new(normal.x, normal.z).normalize().into()],
+                                    ));
+                                } else {
+                                    // line does not intersect plane
+                                    return None;
+                                }
                             }
-                        } else {
-                            let t: f32 = (y - p.y) / (d.y);
-                            if t >= 0. && t <= 1. {
-                                // the intersection is within the start and end of the line
-                                let intsec = (*p) + d * t;
-                                return Some(Polygon {
-                                    points: vec![Point2::new(intsec.x, intsec.z)],
-                                    normals: vec![Vector2::new(normal.x, normal.z).normalize().into()],
-                                });
-                            } else {
-                                // line does not intersect plane
-                                return None;
-                            }
-                        }
-                    })
-                    .collect();
-                return polygons;
+                        })
+                        .unzip();
+
+                if points.len() > 0 {
+                    // Only return a polygon if the triangle intersects the plane
+                    return Some(Polygon {
+                        points: points.iter().flatten().map(|x| *x).collect(),
+                        normals: normals.iter().flatten().map(|x| *x).collect(),
+                    });
+                } else {
+                    return None;
+                }
             })
-            .flatten()
             .collect::<Vec<Polygon>>();
     }
 }
@@ -395,7 +467,7 @@ fn load_model(file: &str) -> Model {
                 vertices[*i2 as usize],
                 vertices[*i3 as usize],
             );
-            let normal: Vector3<f32> = (v1 - v2).cross(v3 - v1).normalize().into();
+            let normal: Vector3<f32> = (v2 - v1).cross(v3 - v1).normalize().into();
 
             return normal;
         })
