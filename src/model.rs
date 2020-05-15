@@ -48,7 +48,7 @@ impl Model {
                     vertices[*i2 as usize],
                     vertices[*i3 as usize],
                 );
-                let normal: Vector3<f32> = (v2 - v1).cross(v3 - v1).normalize().into();
+                let normal: Vector3<f32> = (v1 - v2).cross(v3 - v1).normalize().into();
 
                 return normal;
             })
@@ -85,7 +85,7 @@ impl Model {
                                     let intsec = p + d * t;
                                     return Some((
                                         Point2::new(intsec.x, intsec.z),
-                                        Vector2::new(normal.x, normal.z),
+                                        Vector2::new(normal.x, normal.z).normalize(),
                                     ));
                                 } else {
                                     // line does not intersect plane
@@ -96,13 +96,15 @@ impl Model {
                         .unzip();
 
                 if points.len() > 0 {
-                    if points.len() != 2 {
+                    if points.len() == 3 {
                         // this is a special case, we have the same point two times
                         if points[0] == points[1] {
                             points = vec![points[0], points[2]];
-                        } else if points[0] == points[2] {
+                        } else if points[0] == points[2] || points[1] == points[2] {
                             points = vec![points[0], points[1]];
                         }
+                    } else if points.len() != 2 {
+                        panic!("unexpected number of points ({})", points.len());
                     }
                     if points[0] == points[1] {
                         return None;
@@ -110,7 +112,7 @@ impl Model {
                     // Only return a polygon if the triangle intersects the plane
                     return Some(Polygon {
                         points: points,
-                        normals: normals, // only take first normal
+                        normals: normals[..1].into(), // only take first normal
                     });
                 } else {
                     return None;

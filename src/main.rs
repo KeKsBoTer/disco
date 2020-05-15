@@ -1,13 +1,14 @@
-use crate::polygons::{IndexPolygon, Polygon};
-use cgmath::*;
-use model::Model;
-use std::fs::File;
-use std::io::prelude::*;
 mod model;
 mod polygons;
 
+use cgmath::*;
+use model::Model;
+use polygons::{AbstractPolygon, IndexPolygon, Normal, Polygon, Vertex};
+use std::fs::File;
+use std::io::prelude::*;
+
 fn connect_lines(lines: &Vec<Polygon>) -> Vec<Polygon> {
-    let mut vertices: Vec<Point2<f32>> = Vec::new();
+    let mut vertices: Vec<Vertex> = Vec::new();
     // convert points into list of indices => group similar points
     let mut polygons: Vec<IndexPolygon> = lines
         .iter()
@@ -52,51 +53,47 @@ fn connect_lines(lines: &Vec<Polygon>) -> Vec<Polygon> {
         .collect();
     return line_vertices;
 }
-fn get_line_intersection(
-    p1: Point2<f32>,
-    p2: Point2<f32>,
-    p3: Point2<f32>,
-    p4: Point2<f32>,
-) -> Option<Point2<f32>> {
-    // source: https://stackoverflow.com/a/1968345
-    let s1 = p2 - p1;
-    let s2 = p4 - p3;
 
-    let d = -s2.x * s1.y + s1.x * s2.y;
-
-    let s = (-s1.y * (p1.x - p3.x) + s1.x * (p1.y - p3.y)) / d;
-    let t = (s2.x * (p1.y - p3.y) - s2.y * (p1.x - p3.x)) / d;
-
-    if s >= 0. && s <= 1. && t >= 0. && t <= 1. {
-        return Some(p1 + (p2 - p1) * t);
-    }
-
-    return None;
-}
-
-fn main_join() {
-    let mut v1: Vec<Point2<f32>> = [
-        [0., 0.],
-        [0., 20.],
-        [10., 20.],
-        [10., 10.],
-        [20., 10.],
-        [20., 20.],
-        [30., 20.],
-        [30., 0.],
+fn main() {
+    let (p1, n1) = [
+        ([0., 0.], [-1., 0.]),
+        ([0., 20.], [0., 1.]),
+        // ([10., 20.], [1., 0.]),
+        // ([10., 10.], [0., 1.]),
+        // ([20., 10.], [-1., 0.]),
+        // ([20., 20.], [0., 1.]),
+        ([30., 20.], [1., 0.]),
+        ([30., 0.], [0., -1.]),
+        ([0., 0.], [-1., 0.]),
     ]
     .iter()
-    .map(|[x, y]| Point2::new(*x, *y))
-    .collect();
+    .map(|([x, y], [nx, ny])| (Point2::new(*x, *y), Vector2::new(*nx, *ny)))
+    .unzip();
 
-    let mut v2: Vec<Point2<f32>> = vec![[-10., 15.], [-10., 30.], [40., 30.], [40., 15.]]
-        .iter()
-        .map(|[x, y]| Point2::new(*x, *y))
-        .collect();
+    let mut v1 = Polygon {
+        points: p1,
+        normals: n1,
+    };
+
+    let (p2, n2) = vec![
+        ([-10., 15.], [-1., 0.]),
+        ([-10., 30.], [0., 1.]),
+        ([40., 30.], [1., 0.]),
+        ([40., 15.], [0., -1.]),
+        ([-10., 15.], [-1., 0.]),
+    ]
+    .iter()
+    .map(|([x, y], [nx, ny])| (Point2::new(*x, *y), Vector2::new(*nx, *ny)))
+    .unzip();
+
+    let mut v2 = Polygon {
+        points: p2,
+        normals: n2,
+    };
 
     let mut cuts_1: Vec<usize> = Vec::new();
     let mut cuts_2: Vec<usize> = Vec::new();
-    let mut intersections: Vec<Point2<f32>> = Vec::new();
+    let mut intersections: Vec<Vertex> = Vec::new();
 
     let mut p1: usize = 0;
     let mut p2: usize = 1;
@@ -105,12 +102,19 @@ fn main_join() {
         let mut p4: usize = 1;
         while p3 < v2.len() {
             if p3 < v2.len() && p4 < v2.len() {
-                match get_line_intersection(v1[p1], v1[p2], v2[p3], v2[p4]) {
+                match polygons::get_line_intersection(
+                    v1.get_point(p1),
+                    v1.get_point(p2),
+                    v2.get_point(p3),
+                    v2.get_point(p4),
+                ) {
                     Some(i) => {
                         intersections.push(i);
-                        //TODO insert does not work, solve it another way
-                        v1.insert(p1 + 1, i);
-                        v2.insert(p3 + 1, i);
+                        //v1.insert(p1 + 1, i);
+                        //v2.insert(p3 + 1, i);
+                        // TODO insert actual normal
+                        v1.insert_point(p1 + 1, i, v1.get_normal(p1));
+                        v2.insert_point(p3 + 1, i, v2.get_normal(p3));
 
                         // inserted new, hence skip
                         p1 += 1;
@@ -129,27 +133,84 @@ fn main_join() {
         p1 += 1;
         p2 = if p2 == v1.len() - 1 { 0 } else { p1 + 1 };
     }
-    println!("{:?}", intersections);
 
-    println!("{:?} {:?}", cuts_1, cuts_2);
+    // we are assuming that the length of v1 and v2 is larger then 3
+    let multi_graph = build_multi_graph(&v1, &v2);
 
+    let union: Vec<(Vertex,Normal)> = multi_graph.iter().zip(v1.iter().chain(v2.iter())).map(|(neighbors,(point,normal))|{
+        // every point has 2 or 4 neighbors
+        if neighbors.len() == 2{
+            // return successor point
+            return neighbors[1]
+        }
+        //println!("{:?}",neighbors);
+        //println!("normals: {:?}",neighbors.iter().map(|(p,n)|n.dot(*normal) as f32).collect::<Vec<f32>>());
+        let (best,n) = neighbors.iter().min_by_key(|(p,n)|(p.dot(Vector2::new(point.x,point.y))*1000.) as i64).unwrap();
+        return (*best,*n)
+    }).collect();
+
+    println!("{:?}",union);
     let mut layers: Vec<String> = Vec::new();
-    layers.push(format!(
-        "<g >{}</g>",
-        [v1, v2]
-            .iter()
-            .map(|x| to_polygon(x))
+
+    // draw union
+    layers.push(
+        format!(
+            "<g >{}</g>",
+            v1.iter().chain(v2.iter()).zip(union.iter())
+            .map(|((p1,n1),(p2,n2))| to_line2((*p1,*n1),(*p2,*n2),"orange"))
             .collect::<Vec<String>>()
             .join("\n")
-    ));
-    layers.push(format!(
-        "<g >{}</g>",
-        intersections
-            .iter()
-            .map(|i| format!("<circle cx='{}' cy='{}' r='1' fill='red' />", i.x, i.y))
-            .collect::<Vec<String>>()
-            .join("/n")
-    ));
+        )
+    );
+
+    //draw connections
+    // layers.push(format!(
+    //     "<g >{}</g>",
+    //     multi_graph
+    //         .iter()
+    //         .zip(v1.iter().chain(v2.iter()))
+    //         .flat_map(|(n, (p1,n1))| n.iter().map(move |x| to_line2(*x, (*p1,*n1),"green")))
+    //         .collect::<Vec<String>>()
+    //         .join("\n")
+    // ));
+
+    // draw first polygon
+    // layers.push(
+    //     format!(
+    //         "<g >{}</g>",
+    //         v1.iter().zip(v1.iter().skip(1))
+    //         .map(|((p1,n1),(p2,n2))| to_line2((*p1,*n1),(*p2,*n2),"blue"))
+    //         .collect::<Vec<String>>()
+    //         .join("\n")
+    //     )
+    // );
+    // // draw second polygon
+    // layers.push(
+    //     format!(
+    //         "<g >{}</g>",
+    //         v2.iter().zip(v2.iter().skip(1))
+    //         .map(|((p1,n1),(p2,n2))| to_line2((*p1,*n1),(*p2,*n2),"black"))
+    //         .collect::<Vec<String>>()
+    //         .join("\n")
+    //     )
+    // );
+
+    // layers.push(format!(
+    //     "<g >{}</g>",
+    //     [v1, v2]
+    //         .iter()
+    //         .map(|x| to_polygon(x))
+    //         .collect::<Vec<String>>()
+    //         .join("\n")
+    // ));
+    // layers.push(format!(
+    //     "<g >{}</g>",
+    //     intersections
+    //         .iter()
+    //         .map(|i| format!("<circle cx='{}' cy='{}' r='1' fill='red' />", i.x, i.y))
+    //         .collect::<Vec<String>>()
+    //         .join("/n")
+    // ));
     let mut file = File::create("sliced.html").unwrap();
     file.write_all(
         format!(
@@ -157,7 +218,7 @@ fn main_join() {
             <!DOCTYPE html>
             <html>
                 <body>
-                    <svg viewBox='-100 -100 100 100' height='500' width='500'>
+                    <svg viewBox='-50 -50 100 100' height='800' width='800'>
                         {}
                     </svg>
                 </body>
@@ -170,8 +231,48 @@ fn main_join() {
     .unwrap();
 }
 
-fn main() {
-    let model = Model::load("cube.obj");
+fn build_multi_graph<T>(v1: &AbstractPolygon<T>, v2: &AbstractPolygon<T>) -> Vec<Vec<(T, Normal)>>
+where
+    T: PartialEq + Copy,
+{
+    fn next_prev<T>(i: usize, polygon: &AbstractPolygon<T>) -> Vec<(T, Normal)>
+    where
+        T: PartialEq + Copy,
+    {
+        let i_prev = if i == 0 {
+            // since the first and last point are the same we add the second last one
+            polygon.len() - 2
+        } else {
+            i - 1
+        };
+
+        let i_next = if i == polygon.len() - 1 { 1 } else { i + 1 };
+        vec![polygon.get_pair(i_prev), polygon.get_pair(i_next)]
+    };
+
+    return [(v1, v2), (v2, v1)]
+        .iter()
+        .flat_map(
+            |(v, v_other): &(&AbstractPolygon<T>, &AbstractPolygon<T>)| {
+                v.iter().enumerate().map(move |(i, (p1, n1))| {
+                    // intersection at this point with other polygon
+                    let intersection = v_other.iter().position(|(p2, _)| *p2 == *p1);
+
+                    let mut next_other = match intersection {
+                        Some(j) => next_prev(j, *v_other),
+                        None => vec![],
+                    };
+
+                    next_other.extend(next_prev(i, *v));
+                    return next_other;
+                })
+            },
+        )
+        .collect();
+}
+
+fn main_slice() {
+    let model = Model::load("teapot.obj");
     let mut layers: Vec<String> = Vec::new();
     for z in 0..100 {
         if let Some(outline) = model.slice(z as f32 - 40.) {
@@ -190,7 +291,10 @@ fn main() {
                                 .iter()
                                 .zip(poly.points.iter().skip(1))
                                 .zip(poly.normals.iter())
-                                .map(|((p1, _), v)| to_line(*p1, *v * 3.))
+                                .map(|((p1, p2), v)| to_line(
+                                    Point2::new(p1.x + p2.x, p1.y + p2.y) * 0.5,
+                                    *v * 3.
+                                ))
                                 .collect::<Vec<String>>())
                             .flatten()
                     )
@@ -236,19 +340,34 @@ fn main() {
     .unwrap();
 }
 
-fn to_polygon(points: &Vec<Point2<f32>>) -> String {
+fn to_polygon(points: &Vec<Vertex>) -> String {
     let formatted: Vec<String> = points.iter().map(|p| format!("{},{}", p.x, p.y)).collect();
     return format!(
         "<polygon points='{}' style='fill:none;stroke:purple;stroke-width:0.1'/>",
         formatted.join(" ")
     );
 }
-fn to_line(p: Point2<f32>, v: Vector2<f32>) -> String {
+
+fn to_line(p: Vertex, v: Normal) -> String {
     return format!(
         "<line x1='{}' y1='{}' x2='{}' y2='{}' stroke='red' stroke-width='0.1' />",
         p.x,
         p.y,
         p.x + v.x,
         p.y + v.y
+    );
+}
+
+fn to_line2((p1,n1): (Vertex,Normal), (p2,_): (Vertex,Normal), color: &str) -> String {
+    let center = Point2::new((p1.x+p2.x)/2., (p1.y+p2.y)/2.);
+    return format!(
+        "<line x1='{}' y1='{}' x2='{}' y2='{}' stroke='{color}' stroke-width='0.1' />
+        <line x1='{}' y1='{}' x2='{}' y2='{}' stroke='red' stroke-width='0.1' />
+        <circle cx='{}' cy='{}' r='1' fill='red' />
+        ",
+        p1.x, p1.y, p2.x, p2.y,
+        center.x,center.y, center.x+n1.x,center.y+n1.y,
+        (p1.x+3.*p2.x)/4.,(p1.y+3.*p2.y)/4.,
+        color=color,
     );
 }
