@@ -5,7 +5,7 @@ use cgmath::*;
 use model::Model;
 use polygons::{AbstractPolygon, IndexPolygon, Normal, Polygon, Vertex};
 use std::fs::File;
-use std::io::prelude::*;
+use std::{fmt::Debug, io::prelude::*};
 
 fn connect_lines(lines: &Vec<Polygon>) -> Vec<Polygon> {
     let mut vertices: Vec<Vertex> = Vec::new();
@@ -91,10 +91,6 @@ fn main() {
         normals: n2,
     };
 
-    let mut cuts_1: Vec<usize> = Vec::new();
-    let mut cuts_2: Vec<usize> = Vec::new();
-    let mut intersections: Vec<Vertex> = Vec::new();
-
     let mut p1: usize = 0;
     let mut p2: usize = 1;
     while p1 < v1.len() {
@@ -108,21 +104,15 @@ fn main() {
                     v2.get_point(p3),
                     v2.get_point(p4),
                 ) {
-                    Some(i) => {
-                        intersections.push(i);
-                        //v1.insert(p1 + 1, i);
-                        //v2.insert(p3 + 1, i);
-                        // TODO insert actual normal
-                        v1.insert_point(p1 + 1, i, v1.get_normal(p1));
-                        v2.insert_point(p3 + 1, i, v2.get_normal(p3));
+                    Some(intersection) => {
+                        v1.insert_point(p1 + 1, intersection, v1.get_normal(p1));
+                        v2.insert_point(p3 + 1, intersection, v2.get_normal(p3));
 
                         // inserted new, hence skip
                         p1 += 1;
                         p2 += 1;
                         p3 += 1;
                         p4 += 1;
-                        cuts_1.push(p1);
-                        cuts_2.push(p3);
                     }
                     None => (),
                 }
@@ -137,31 +127,55 @@ fn main() {
     // we are assuming that the length of v1 and v2 is larger then 3
     let multi_graph = build_multi_graph(&v1, &v2);
 
-    let union: Vec<(Vertex,Normal)> = multi_graph.iter().zip(v1.iter().chain(v2.iter())).map(|(neighbors,(point,normal))|{
-        // every point has 2 or 4 neighbors
-        if neighbors.len() == 2{
-            // return successor point
-            return neighbors[1]
-        }
-        //println!("{:?}",neighbors);
-        //println!("normals: {:?}",neighbors.iter().map(|(p,n)|n.dot(*normal) as f32).collect::<Vec<f32>>());
-        let (best,n) = neighbors.iter().min_by_key(|(p,n)|(p.dot(Vector2::new(point.x,point.y))*1000.) as i64).unwrap();
-        return (*best,*n)
-    }).collect();
+    let mut union_staff: Vec<(Point2<f32>, Vector2<f32>)> =
+        vec![(Point2::new(0., 0.), Vector2::new(-1., 0.))];
+    for i in 0..7 {
+        //while union_staff.len() == 1 || union_staff.last() != union_staff.first() {
+        let l = union_staff.len();
+        let (point, _) = union_staff.last().unwrap();
+        let pos = v1
+            .iter()
+            .chain(v2.iter())
+            .position(|(p, _): (&Vertex, &Normal)| *p == *point)
+            .unwrap();
 
-    println!("{:?}",union);
+        let incoming_normal = union_staff.iter().last().unwrap().1;
+
+        let next: (Vertex, Normal) = if multi_graph[pos].len() == 2 {
+            // return successor point
+            multi_graph[pos][1]
+        } else {
+            *multi_graph[pos]
+                .iter()
+                // don't go back in the line
+                .skip(1)
+                .min_by_key(|(p, n)| {
+                    (Vector2::new(point.x-union_staff[l-1].0.x, point.y -union_staff[l-1].0.y).dot(Vector2::new(
+                        p.x - point.x,
+                        p.y - point.y,
+                    )) * 1000.) as i64
+                })
+                .unwrap()
+        };
+        println!("{:?}",multi_graph[pos]);
+        union_staff[l - 1].1.x = next.1.x;
+        union_staff[l - 1].1.y = next.1.y;
+        union_staff.push(next);
+    }
+
+    println!("{:?}", union_staff);
     let mut layers: Vec<String> = Vec::new();
 
     // draw union
-    layers.push(
-        format!(
-            "<g >{}</g>",
-            v1.iter().chain(v2.iter()).zip(union.iter())
-            .map(|((p1,n1),(p2,n2))| to_line2((*p1,*n1),(*p2,*n2),"orange"))
+    layers.push(format!(
+        "<g >{}</g>",
+        union_staff
+            .iter()
+            .zip(union_staff.iter().skip(1))
+            .map(|((p1, n1), (p2, n2))| to_line2((*p1, *n1), (*p2, *n2), "orange"))
             .collect::<Vec<String>>()
             .join("\n")
-        )
-    );
+    ));
 
     //draw connections
     // layers.push(format!(
@@ -233,7 +247,7 @@ fn main() {
 
 fn build_multi_graph<T>(v1: &AbstractPolygon<T>, v2: &AbstractPolygon<T>) -> Vec<Vec<(T, Normal)>>
 where
-    T: PartialEq + Copy,
+    T: std::fmt::Debug + PartialEq + Copy + Debug,
 {
     fn next_prev<T>(i: usize, polygon: &AbstractPolygon<T>) -> Vec<(T, Normal)>
     where
@@ -247,7 +261,9 @@ where
         };
 
         let i_next = if i == polygon.len() - 1 { 1 } else { i + 1 };
-        vec![polygon.get_pair(i_prev), polygon.get_pair(i_next)]
+        let p_point = polygon.get_pair(i_prev);
+        let n_point = polygon.get_pair(i_next);
+        vec![p_point, (n_point.0, polygon.normals[i])]
     };
 
     return [(v1, v2), (v2, v1)]
@@ -262,8 +278,8 @@ where
                         Some(j) => next_prev(j, *v_other),
                         None => vec![],
                     };
-
-                    next_other.extend(next_prev(i, *v));
+                    let this = next_prev(i, *v);
+                    next_other.extend(this);
                     return next_other;
                 })
             },
@@ -358,16 +374,23 @@ fn to_line(p: Vertex, v: Normal) -> String {
     );
 }
 
-fn to_line2((p1,n1): (Vertex,Normal), (p2,_): (Vertex,Normal), color: &str) -> String {
-    let center = Point2::new((p1.x+p2.x)/2., (p1.y+p2.y)/2.);
+fn to_line2((p1, n1): (Vertex, Normal), (p2, _): (Vertex, Normal), color: &str) -> String {
+    let center = Point2::new((p1.x + p2.x) / 2., (p1.y + p2.y) / 2.);
     return format!(
         "<line x1='{}' y1='{}' x2='{}' y2='{}' stroke='{color}' stroke-width='0.1' />
-        <line x1='{}' y1='{}' x2='{}' y2='{}' stroke='red' stroke-width='0.1' />
-        <circle cx='{}' cy='{}' r='1' fill='red' />
-        ",
-        p1.x, p1.y, p2.x, p2.y,
-        center.x,center.y, center.x+n1.x,center.y+n1.y,
-        (p1.x+3.*p2.x)/4.,(p1.y+3.*p2.y)/4.,
-        color=color,
+        <line x1='{}' y1='{}' x2='{}' y2='{}' stroke='red' stroke-width='0.1' />"
+        //<circle cx='{}' cy='{}' r='1' fill='red' />
+        ,//",
+        p1.x,
+        p1.y,
+        p2.x,
+        p2.y,
+        center.x,
+        center.y,
+        center.x + n1.x,
+        center.y + n1.y,
+        // (p1.x + 3. * p2.x) / 4.,
+        // (p1.y + 3. * p2.y) / 4.,
+        color = color,
     );
 }
