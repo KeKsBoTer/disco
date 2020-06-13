@@ -129,7 +129,7 @@ fn main() {
 
     let mut union_staff: Vec<(Point2<f32>, Vector2<f32>)> =
         vec![(Point2::new(0., 0.), Vector2::new(-1., 0.))];
-    for i in 0..7 {
+    for i in 0..8 {
         //while union_staff.len() == 1 || union_staff.last() != union_staff.first() {
         let l = union_staff.len();
         let (point, _) = union_staff.last().unwrap();
@@ -139,31 +139,49 @@ fn main() {
             .position(|(p, _): (&Vertex, &Normal)| *p == *point)
             .unwrap();
 
-        let incoming_normal = union_staff.iter().last().unwrap().1;
+        let incoming_vertex = if l == 1 {
+            union_staff[l - 1].0
+        } else {
+            union_staff[l - 2].0
+        };
 
-        let next: (Vertex, Normal) = if multi_graph[pos].len() == 2 {
+        let next: (Vertex, Normal) = if multi_graph[pos].len() == 1 {
             // return successor point
-            multi_graph[pos][1]
+            multi_graph[pos][0]
         } else {
             *multi_graph[pos]
                 .iter()
-                // don't go back in the line
-                .skip(1)
                 .min_by_key(|(p, n)| {
-                    (Vector2::new(point.x-union_staff[l-1].0.x, point.y -union_staff[l-1].0.y).dot(Vector2::new(
-                        p.x - point.x,
-                        p.y - point.y,
-                    )) * 1000.) as i64
+                    let d_in =
+                        Vector2::new(point.x - incoming_vertex.x, point.y - incoming_vertex.y)
+                            .normalize();
+                    let d_out = Vector2::new(p.x - point.x, p.y - point.y).normalize();
+
+                    println!(
+                        "({:?}) {:?} {:?} => {:?}",
+                        p,
+                        d_in,
+                        d_out,
+                        3.14 - (d_in.x * d_out.y - d_out.x * d_in.y)
+                            .atan2(d_in.x * d_out.x + d_in.y * d_out.y)
+                    );
+
+                    return (3.14
+                        - (d_in.x * d_out.y - d_out.x * d_in.y)
+                            .atan2(d_in.x * d_out.x + d_in.y * d_out.y)
+                            * 1000.) as i64;
                 })
                 .unwrap()
         };
-        println!("{:?}",multi_graph[pos]);
+        if multi_graph[pos].len() != 1 {
+            println!("{:?}\n", multi_graph[pos]);
+        }
         union_staff[l - 1].1.x = next.1.x;
         union_staff[l - 1].1.y = next.1.y;
         union_staff.push(next);
     }
 
-    println!("{:?}", union_staff);
+    //println!("{:?}", union_staff);
     let mut layers: Vec<String> = Vec::new();
 
     // draw union
@@ -178,15 +196,15 @@ fn main() {
     ));
 
     //draw connections
-    // layers.push(format!(
-    //     "<g >{}</g>",
-    //     multi_graph
-    //         .iter()
-    //         .zip(v1.iter().chain(v2.iter()))
-    //         .flat_map(|(n, (p1,n1))| n.iter().map(move |x| to_line2(*x, (*p1,*n1),"green")))
-    //         .collect::<Vec<String>>()
-    //         .join("\n")
-    // ));
+    layers.push(format!(
+        "<g opacity='0.1' >{}</g>",
+        multi_graph
+            .iter()
+            .zip(v1.iter().chain(v2.iter()))
+            .flat_map(|(n, (p1, n1))| n.iter().map(move |x| to_line2(*x, (*p1, *n1), "green")))
+            .collect::<Vec<String>>()
+            .join("\n")
+    ));
 
     // draw first polygon
     // layers.push(
@@ -279,7 +297,8 @@ where
                         None => vec![],
                     };
                     let this = next_prev(i, *v);
-                    next_other.extend(this);
+                    // skip first so you cant go back
+                    next_other.extend(this.iter().skip(1));
                     return next_other;
                 })
             },
